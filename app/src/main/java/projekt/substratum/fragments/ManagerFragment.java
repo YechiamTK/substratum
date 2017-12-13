@@ -483,7 +483,11 @@ public class ManagerFragment extends Fragment implements SearchView.OnQueryTextL
      */
     @Override
     public boolean onQueryTextSubmit(String query) {
-        return false;
+        if (!userInput.equals(query)) {
+            userInput = query;
+            new LayoutReloader(ManagerFragment.this, userInput).execute();
+        }
+        return true;
     }
 
     /**
@@ -650,6 +654,7 @@ public class ManagerFragment extends Fragment implements SearchView.OnQueryTextL
                 } catch (Exception e) {
                     // Consume window refresh
                 }
+                fragment.userInput = "";
             }
             return null;
         }
