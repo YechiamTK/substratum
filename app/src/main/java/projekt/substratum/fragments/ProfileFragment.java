@@ -840,7 +840,7 @@ public class ProfileFragment extends Fragment {
                                 .create().show();
                     } else {
                         // Continue restore process (enable)
-                        new ContinueRestore(profileFragment, profile_name, to_be_run)
+                        new ContinueRestore(profileFragment, profile_name, to_be_run) //THE ONE THAT I NEED
                                 .execute();
                     }
                 } else {
@@ -1144,7 +1144,7 @@ public class ProfileFragment extends Fragment {
         }
 
         @Override
-        protected Void doInBackground(Void... params) {
+        protected Void doInBackground(Void... params) {     //THIS IS WHAT I NEED.
             ProfileFragment profileFragment = ref.get();
             if (profileFragment != null) {
                 profileFragment.late_install = new ArrayList<>();

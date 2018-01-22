@@ -193,6 +193,12 @@
                     android:text="@string/fab_menu_disable" />
 
                 <TextView
+                    android:id="@+id/update_selected"
+                    style="@style/TextAppearance.MaterialSheetFab.Sheet.Item"
+                    android:drawableStart="@drawable/fab_menu_compile_update"
+                    android:text="@string/fab_update_selected" />
+
+                <TextView
                     android:id="@+id/uninstall"
                     style="@style/TextAppearance.MaterialSheetFab.Sheet.Item"
                     android:drawableStart="@drawable/fab_menu_uninstall"

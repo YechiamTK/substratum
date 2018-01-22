@@ -541,6 +541,7 @@
     <string name="fab_menu_uninstall">Uninstall selected</string>
     <string name="fab_menu_disable">Disable selected</string>
     <string name="fab_menu_enable">Enable selected</string>
+    <string name="fab_update_selected">Update selected</string>
     <string name="fab_menu_enable_disable">Change overlay states</string>
     <string name="fab_menu_swap_toggle">Disable other themes</string>
     <string name="fab_menu_swap_toggle_legacy">Remove all existing</string>

@@ -27,10 +27,12 @@ import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
 import android.os.AsyncTask;
 import android.os.Bundle;
+import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
 import android.preference.PreferenceManager;
 import android.support.annotation.NonNull;
+import android.support.design.widget.Lunchbar;
 import android.support.v4.app.Fragment;
 import android.support.v4.content.LocalBroadcastManager;
 import android.support.v4.util.Pair;
@@ -40,6 +42,7 @@ import android.support.v7.widget.LinearLayoutManager;
 import android.support.v7.widget.RecyclerView;
 import android.support.v7.widget.SearchView;
 import android.util.Log;
+import android.util.Xml;
 import android.view.LayoutInflater;
 import android.view.Menu;
 import android.view.MenuInflater;
@@ -54,7 +57,11 @@ import android.widget.Toast;
 
 import com.gordonwong.materialsheetfab.MaterialSheetFab;
 
+import org.xmlpull.v1.XmlSerializer;
+
 import java.io.File;
+import java.io.FileOutputStream;
+import java.io.IOException;
 import java.lang.ref.WeakReference;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -75,9 +82,20 @@ import projekt.substratum.common.References;
 import projekt.substratum.common.Systems;
 import projekt.substratum.common.commands.ElevatedCommands;
 import projekt.substratum.common.commands.FileOperations;
+import projekt.substratum.common.platform.SubstratumService;
+import projekt.substratum.common.platform.ThemeInterfacerService;
 import projekt.substratum.common.platform.ThemeManager;
 import projekt.substratum.util.views.FloatingActionMenu;
 
+import static projekt.substratum.common.Internal.NO_MEDIA;
+import static projekt.substratum.common.Internal.OVERLAY_DIR;
+import static projekt.substratum.common.Internal.OVERLAY_PROFILE_STATE_FILE;
+import static projekt.substratum.common.Internal.OVERLAY_STATE_FILE;
+import static projekt.substratum.common.Internal.PROFILE_DIRECTORY;
+import static projekt.substratum.common.Internal.SYSTEM_OVERLAY;
+import static projekt.substratum.common.Internal.SYSTEM_VENDOR_OVERLAY;
+import static projekt.substratum.common.Internal.XML_SERIALIZER;
+import static projekt.substratum.common.Internal.XML_UTF;
 import static projekt.substratum.common.Packages.getOverlayMetadata;
 import static projekt.substratum.common.Packages.getOverlayParent;
 import static projekt.substratum.common.Packages.getOverlayTarget;
@@ -89,6 +107,7 @@ import static projekt.substratum.common.References.MANAGER_REFRESH;
 import static projekt.substratum.common.References.PIXEL_NEXUS_DIR;
 import static projekt.substratum.common.References.REFRESH_WINDOW_DELAY;
 import static projekt.substratum.common.References.VENDOR_DIR;
+import static projekt.substratum.common.References.metadataOverlayParent;
 import static projekt.substratum.common.Systems.checkOMS;
 import static projekt.substratum.common.platform.ThemeManager.STATE_DISABLED;
 import static projekt.substratum.common.platform.ThemeManager.STATE_ENABLED;
@@ -125,6 +144,8 @@ public class ManagerFragment extends Fragment implements SearchView.OnQueryTextL
     TextView disable_selected;
     @BindView(R.id.uninstall)
     TextView uninstall_selected;
+    @BindView(R.id.update_selected)
+    TextView update_selected;
     @BindView(R.id.no_themes_title)
     TextView titleView;
     @BindView(R.id.no_themes_description)
@@ -318,6 +339,8 @@ public class ManagerFragment extends Fragment implements SearchView.OnQueryTextL
         }
         disable_selected.setOnClickListener(v ->
                 new RunDisable(ManagerFragment.this).execute());
+        update_selected.setOnClickListener(v ->
+                new RunUpdate (ManagerFragment.this).execute());
         if (!Systems.checkOMS(context) && !Systems.isSamsungDevice(context))
             uninstall_selected.setVisibility(View.GONE);
         uninstall_selected.setOnClickListener(v ->
@@ -483,7 +506,11 @@ public class ManagerFragment extends Fragment implements SearchView.OnQueryTextL
      */
     @Override
     public boolean onQueryTextSubmit(String query) {
-        return false;
+        if (!userInput.equals(query)) {
+            userInput = query;
+            new LayoutReloader(ManagerFragment.this, userInput).execute();
+        }
+        return true;
     }
 
     /**
@@ -650,6 +677,7 @@ public class ManagerFragment extends Fragment implements SearchView.OnQueryTextL
                 } catch (Exception e) {
                     // Consume window refresh
                 }
+                fragment.userInput = "";
             }
             return null;
         }
@@ -1136,6 +1164,296 @@ public class ManagerFragment extends Fragment implements SearchView.OnQueryTextL
                 }
             }
             return null;
+        }
+    }
+
+    /**
+     * Update function
+     */
+    private static class RunUpdate extends AsyncTask<Void, Void, Void> {
+
+        // Profile state list tags
+        private static final String METADATA_PROFILE_ENABLED = "enabled";
+        private static final String METADATA_PROFILE_DISABLED = "disabled";
+        private static final String METADATA_PROFILE_OVERLAYS = "overlays";
+        private static final String METADATA_PROFILE_ITEM = "item";
+        private static final String METADATA_PROFILE_PACKAGE_NAME = "packageName";
+        private static final String METADATA_PROFILE_TARGET = "target";
+        private static final String METADATA_PROFILE_PARENT = "parent";
+        private static final String METADATA_PROFILE_TYPE1A = "type1a";
+        private static final String METADATA_PROFILE_TYPE1B = "type1b";
+        private static final String METADATA_PROFILE_TYPE1C = "type1c";
+        private static final String METADATA_PROFILE_TYPE2 = "type2";
+        private static final String METADATA_PROFILE_TYPE3 = "type3";
+        private static final String METADATA_PROFILE_TYPE4 = "type4";
+        private WeakReference<ManagerFragment> ref;
+        List<ManagerItem> enabled = new ArrayList<>();
+        List<ManagerItem> disabled = new ArrayList<>();
+
+        private RunUpdate(ManagerFragment fragment) {
+            super();
+            ref = new WeakReference<>(fragment);
+            List<ManagerItem> overlays = new ArrayList<>();
+            for (int i = 0; i < fragment.overlaysList.size(); i++) {
+                if (fragment.overlaysList.get(i).isSelected())
+                    overlays.add(fragment.overlaysList.get(i));
+            }
+            for (int i = 0; i < overlays.size(); i++) {
+                if (fragment.activated_overlays.contains(overlays.get(i).getName()))
+                    enabled.add(overlays.get(i));
+                else
+                    disabled.add(overlays.get(i));
+            }
+        }
+
+        @Override
+        protected void onPreExecute() {
+            ManagerFragment fragment = ref.get();
+            if (fragment != null) {
+                MainActivity.queuedUninstall = new ArrayList<>();
+                materialSheetFab.hideSheet();
+                fragment.loadingBar.setVisibility(View.VISIBLE);
+            }
+        }
+
+        /*private Map<String, List<ManagerItem>> divideByThemes () {
+            ManagerFragment fragment = ref.get();
+            Context context = fragment.context;
+            Map<String, List<ManagerItem>> dividedLists = new HashMap<>();
+            Collection<String> themesCollection = Packages.getThemesArray(context);
+            List<String> themes = new ArrayList<>(themesCollection);
+            themes.sort(String::compareToIgnoreCase);
+            for (int i = 0; i < themes.size(); i++) {
+                dividedLists.put(themes.get(i), new ArrayList<>());
+            }
+            List<ManagerItem> temp = fragment.overlayList;
+            fragment.refreshThemeName();
+            Iterator<String> it = themes.iterator();
+            for (int i = 0; i < fragment.overlaysList.size(); i++) {
+                if (fragment.overlaysList.get(i).getThemeName().contains(it.toString())) {
+                    dividedLists.get(it.toString()).add(fragment.overlayList.get(i));
+                }
+                else {
+                    if (it.hasNext()) it.next();
+                    //if not then something went horribly wrong.
+                }
+            }
+            fragment.overlaysList = temp;
+            return dividedLists;
+        }*/
+
+        @Override
+        protected Void doInBackground(Void... params) {
+            ManagerFragment fragment = ref.get();
+            Context context = fragment.context;
+            //Map<String, List<ManagerItem>> overlaysByTheme = divideByThemes();
+
+
+            return null;
+        }
+
+        private void backup () {
+            ManagerFragment fragment = ref.get();
+            Context context = fragment.context;
+
+            String uid =
+                    Environment.getExternalStorageDirectory().getAbsolutePath().split("/")[3];
+            File nomediaFile = new File(Environment.getExternalStorageDirectory() +
+                    NO_MEDIA);
+            try {
+                if (!nomediaFile.createNewFile()) {
+                    Log.d(References.SUBSTRATUM_LOG, "Could not create .nomedia file or" +
+                            " file already exist!");
+                }
+            } catch (IOException e) {
+                Log.d(References.SUBSTRATUM_LOG, "Could not create .nomedia file!");
+                e.printStackTrace();
+            }
+
+            if (Systems.checkOMS(context)) {
+                File profileDir = new File(Environment
+                        .getExternalStorageDirectory().getAbsolutePath() +
+                        PROFILE_DIRECTORY + "temp" + '/');
+                if (profileDir.exists()) {
+                    FileOperations.delete(context,
+                            Environment.getExternalStorageDirectory().getAbsolutePath() +
+                                    PROFILE_DIRECTORY + "temp");
+                    if (!profileDir.mkdir())
+                        Log.e(References.SUBSTRATUM_LOG, "Could not create profile directory.");
+                } else {
+                    if (!profileDir.mkdir())
+                        Log.e(References.SUBSTRATUM_LOG, "Could not create profile directory.");
+                }
+
+                File profileFile = new File(Environment.getExternalStorageDirectory()
+                        .getAbsolutePath() +
+                        PROFILE_DIRECTORY + "temp" +
+                        '/' + OVERLAY_STATE_FILE);
+                if (profileFile.exists()) {
+                    FileOperations.delete(
+                            context,
+                            profileFile.getAbsolutePath());
+                }
+
+                writeProfileState(context,"temp");
+            } else {                                   //NOT GOOD! THIS BACKS UP ALL THE OVERLAYS.
+                String current_directory;
+                if (projekt.substratum.common.Resources.inNexusFilter()) {
+                    current_directory = SYSTEM_OVERLAY;
+                } else {
+                    current_directory = SYSTEM_VENDOR_OVERLAY;
+                }
+                File file = new File(current_directory);
+                if (file.exists()) {
+                    FileOperations.mountRW();
+                    FileOperations.copyDir(context, current_directory,
+                            Environment.getExternalStorageDirectory().getAbsolutePath() +
+                                    PROFILE_DIRECTORY);
+                    File oldFolder = new File(Environment
+                            .getExternalStorageDirectory()
+                            .getAbsolutePath() + PROFILE_DIRECTORY + OVERLAY_DIR);
+                    File newFolder = new File(Environment
+                            .getExternalStorageDirectory()
+                            .getAbsolutePath() + PROFILE_DIRECTORY +
+                            "temp");
+                    boolean success = oldFolder.renameTo(newFolder);
+                    if (!success)
+                        Log.e(References.SUBSTRATUM_LOG,
+                                "Could not move profile directory...");
+
+                    FileOperations.mountRO();
+                } else {
+                    /*if (profileFragment.getView() != null) {
+                        Lunchbar.make(profileFragment.getView(),
+                                profileFragment.getString(R.string.backup_no_overlays),
+                                Lunchbar.LENGTH_LONG)
+                                .show();
+                    }*/
+                    //Check if necessary, if it is then put proper Lunchbar.
+                }
+            }
+        }
+
+        private void writeProfileState(Context context,
+                                             String profileName) {
+            try {
+                try (FileOutputStream outputStream = new FileOutputStream(
+                        Environment.getExternalStorageDirectory().getAbsolutePath() +
+                                PROFILE_DIRECTORY + profileName + "/" + OVERLAY_PROFILE_STATE_FILE)) {
+                    XmlSerializer xmlSerializer = Xml.newSerializer();
+                    xmlSerializer.setOutput(outputStream, XML_UTF);
+                    xmlSerializer.setFeature(XML_SERIALIZER, true);
+                    xmlSerializer.startDocument(null, true);
+                    xmlSerializer.startTag(null, METADATA_PROFILE_OVERLAYS);
+
+
+                    // Write enabled overlays
+                    if (!enabled.isEmpty()) {
+                        xmlSerializer.startTag(null, METADATA_PROFILE_ENABLED);
+                        for (int i = 0; i < enabled.size(); i++) {
+
+                            xmlSerializer.startTag(null, METADATA_PROFILE_ITEM)
+                                    .attribute(null, METADATA_PROFILE_PACKAGE_NAME,
+                                            String.valueOf(enabled.get(i).getName()))
+                                    .attribute(null, METADATA_PROFILE_TARGET,
+                                            String.valueOf(Packages.getOverlayTarget
+                                                    (context, enabled.get(i).getName())))
+                                    .attribute(null, METADATA_PROFILE_PARENT,
+                                            String.valueOf(Packages.getOverlayMetadata(
+                                                    context, enabled.get(i).getName(),
+                                                    metadataOverlayParent)))
+                                    .attribute(null, METADATA_PROFILE_TYPE1A,
+                                            String.valueOf(enabled.get(i).getType1a()))
+                                    .attribute(null, METADATA_PROFILE_TYPE1B,
+                                            String.valueOf(enabled.get(i).getType1b()))
+                                    .attribute(null, METADATA_PROFILE_TYPE1C,
+                                            String.valueOf(enabled.get(i).getType1c()))
+                                    .attribute(null, METADATA_PROFILE_TYPE2,
+                                            String.valueOf(enabled.get(i).getType2()))
+                                    .attribute(null, METADATA_PROFILE_TYPE3,
+                                            String.valueOf(enabled.get(i).getType3()))
+                                    .attribute(null, METADATA_PROFILE_TYPE4,
+                                            String.valueOf(enabled.get(i).getType4()))
+                                    .endTag(null, METADATA_PROFILE_ITEM);
+                        }
+                        xmlSerializer.endTag(null, METADATA_PROFILE_ENABLED);
+                    }
+
+                    // Write disabled overlays
+                    if (!disabled.isEmpty()) {
+                        xmlSerializer.startTag(null, METADATA_PROFILE_DISABLED);
+                        for (int i = 0; i < disabled.size(); i++) {
+                            xmlSerializer.startTag(null, METADATA_PROFILE_ITEM)
+                                    .attribute(null, METADATA_PROFILE_PACKAGE_NAME,
+                                            String.valueOf(disabled.get(i).getName()))
+                                    .attribute(null, METADATA_PROFILE_TARGET,
+                                            String.valueOf(Packages.getOverlayTarget(
+                                                    context, disabled.get(i).getName())))
+                                    .attribute(null, METADATA_PROFILE_PARENT,
+                                            String.valueOf(Packages.getOverlayMetadata(
+                                                    context, disabled.get(i).getName(),
+                                                    metadataOverlayParent)))
+                                    .attribute(null, METADATA_PROFILE_TYPE1A,
+                                            String.valueOf(disabled.get(i).getType1a()))
+                                    .attribute(null, METADATA_PROFILE_TYPE1B,
+                                            String.valueOf(disabled.get(i).getType1b()))
+                                    .attribute(null, METADATA_PROFILE_TYPE1C,
+                                            String.valueOf(disabled.get(i).getType1c()))
+                                    .attribute(null, METADATA_PROFILE_TYPE2,
+                                            String.valueOf(disabled.get(i).getType2()))
+                                    .attribute(null, METADATA_PROFILE_TYPE3,
+                                            String.valueOf(disabled.get(i).getType3()))
+                                    .attribute(null, METADATA_PROFILE_TYPE4,
+                                            String.valueOf(disabled.get(i).getType4()))
+                                    .endTag(null, METADATA_PROFILE_ITEM);
+                        }
+                        xmlSerializer.endTag(null, METADATA_PROFILE_DISABLED);
+                    }
+
+                    xmlSerializer.endTag(null, METADATA_PROFILE_OVERLAYS);
+                    xmlSerializer.endDocument();
+                    xmlSerializer.flush();
+                }
+            } catch (IOException ioe) {
+                // Suppress exception
+            }
+        }
+
+        private void restore(Context context, String profileName) {
+            Substratum.getInstance().unregisterFinishReceiver();
+            ArrayList<String> toBeDisabled = new ArrayList<>();
+            ArrayList<String> toBeEnabled = new ArrayList<>();
+            for (int i = 0; i < enabled.size(); i++) {
+                toBeDisabled.add(disabled.get(i).getName());
+            }
+            for (int i = 0; i < disabled.size(); i++) {
+                toBeEnabled.add(enabled.get(i).getName());
+            }
+            boolean shouldRestartUi =
+                    ThemeManager.shouldRestartUI(context, toBeDisabled)
+                            || ThemeManager.shouldRestartUI(context, toBeEnabled);
+            if (Systems.checkSubstratumService(context)) {
+                SubstratumService.applyProfile(
+                        profileName,
+                        toBeDisabled,
+                        toBeEnabled,
+                        shouldRestartUi);
+            } else if (Systems.checkThemeInterfacer(context)) {
+                ThemeInterfacerService.applyProfile(
+                        context,
+                        profileName,
+                        toBeDisabled,
+                        toBeEnabled,
+                        shouldRestartUi);
+            } else {    //NOT GOOD! THIS DOES ALL THE OVERLAYS!
+                ThemeManager.disableAllThemeOverlays(context);
+                ThemeManager.enableOverlay(context, toBeEnabled);
+            }
+        }
+
+        @Override
+        protected void onPostExecute(Void result) {
+
         }
     }
 
